@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -13,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/yaml.v2"
 	_ "github.com/lib/pq"
+	"gopkg.in/yaml.v3"
 )
 
 type QueryDefinition struct {
@@ -145,4 +144,3 @@ func main() {
 		log.Fatalf("Error executing queries: %v", err)
 	}
 }
-
