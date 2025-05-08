@@ -1,4 +1,4 @@
-// secure_query_runner.go
+// dbexec is a tool for securely executing predefined SQL queries with parameter validation.
 package main
 
 import (
@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -27,8 +26,9 @@ type QueryDefinition struct {
 
 var queries = map[string]QueryDefinition{}
 
+// loadQueriesFromYAML loads query definitions from a YAML file and stores them in the queries map.
 func loadQueriesFromYAML(path string) error {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read YAML file: %w", err)
 	}
@@ -44,16 +44,23 @@ func loadQueriesFromYAML(path string) error {
 	return nil
 }
 
+// runQueriesInTransaction executes a list of predefined queries within a single transaction.
+// If approve is false, it performs a dry run without committing changes.
 func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string, approve bool) error {
-	tx, err := db.BeginTx(context.Background(), nil)
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback() // Will be ignored if already committed
+		}
+	}()
 
 	for _, id := range ids {
 		qdef, ok := queries[strings.TrimSpace(id)]
 		if !ok {
-			tx.Rollback()
 			return fmt.Errorf("unknown query ID: %s", id)
 		}
 
@@ -61,32 +68,29 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 		for _, key := range qdef.AllowedParams {
 			val, ok := params[key]
 			if !ok {
-				tx.Rollback()
 				return fmt.Errorf("missing parameter: %s", key)
 			}
 			args = append(args, val)
 		}
 
 		if !approve {
+			// For preview mode, convert UPDATE statements to SELECT for safety
 			previewSQL := strings.Replace(qdef.SQL, "UPDATE", "SELECT * FROM", 1)
-			rows, err := tx.QueryContext(context.Background(), previewSQL, args...)
+			rows, err := tx.QueryContext(ctx, previewSQL, args...)
 			if err != nil {
-				tx.Rollback()
 				return fmt.Errorf("preview failed for %s: %v", id, err)
 			}
-			rows.Close()
+			defer rows.Close()
 			fmt.Printf("[PREVIEW] %s\n", previewSQL)
 			continue
 		}
 
-		res, err := tx.ExecContext(context.Background(), qdef.SQL, args...)
+		res, err := tx.ExecContext(ctx, qdef.SQL, args...)
 		if err != nil {
-			tx.Rollback()
 			return fmt.Errorf("execution error for %s: %v", id, err)
 		}
 		n, _ := res.RowsAffected()
 		if qdef.MaxRowsAffected > 0 && int(n) > qdef.MaxRowsAffected {
-			tx.Rollback()
 			return fmt.Errorf("exceeded row limit for %s: %d > %d", id, n, qdef.MaxRowsAffected)
 		}
 
@@ -97,9 +101,9 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
+		tx = nil // Prevent rollback in defer
 		fmt.Println("All queries committed successfully.")
 	} else {
-		tx.Rollback()
 		fmt.Println("Dry run completed. No changes applied.")
 	}
 	return nil
