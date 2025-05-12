@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
@@ -120,13 +121,41 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 					return fmt.Errorf("error scanning row: %v", err)
 				}
 				
-				// Convert to strings and print
-				var rowValues []string
-				for _, v := range values {
-					rowValues = append(rowValues, fmt.Sprintf("%v", v))
+				// Print each column on a new line
+				fmt.Printf("Row %d:\n", rowCount+1)
+				fmt.Println(strings.Repeat("-", 40))
+				
+				for i, col := range columns {
+					// Format the value based on type
+					var displayVal string
+					v := values[i]
+					
+					if v == nil {
+						displayVal = "<NULL>"
+					} else {
+						switch val := v.(type) {
+						case []byte:
+							// Try to convert byte slice to UUID string if it looks like a UUID
+							if len(val) == 16 {
+								// Format as UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+								displayVal = fmt.Sprintf("%x-%x-%x-%x-%x", 
+									val[0:4], val[4:6], val[6:8], val[8:10], val[10:16])
+							} else {
+								// Try to convert to string
+								displayVal = string(val)
+							}
+						case time.Time:
+							// Format time values consistently
+							displayVal = val.Format("2006-01-02 15:04:05")
+						default:
+							// Use default formatting for other types
+							displayVal = fmt.Sprintf("%v", val)
+						}
+					}
+					
+					fmt.Printf("  %s: %s\n", col, displayVal)
 				}
-				fmt.Println(strings.Join(rowValues, "\t"))
-				fmt.Println("\n")
+				fmt.Println()
 				rowCount++
 			}
 			
