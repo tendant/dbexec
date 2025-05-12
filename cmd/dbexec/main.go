@@ -83,88 +83,67 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 				return fmt.Errorf("execution error for %s: %v", id, err)
 			}
 			defer rows.Close()
-			
-			// Get column names
-			columns, err := rows.Columns()
+
+			// Print the query results
+			prefix := "[EXECUTED]"
+			title := "Results:"
+			rowCount, err := printQueryResults(rows, qdef.ID, prefix, title)
 			if err != nil {
-				return fmt.Errorf("failed to get columns for %s: %v", id, err)
+				return fmt.Errorf("error printing results for %s: %v", id, err)
 			}
-			
-			fmt.Printf("[EXECUTED] QueryID=%s\n", qdef.ID)
-			fmt.Println("Results:")
-			fmt.Println(strings.Join(columns, "\t"))
-			fmt.Println(strings.Repeat("-", 80))
-			
-			// Prepare values to scan into
-			values := make([]interface{}, len(columns))
-			scanArgs := make([]interface{}, len(columns))
-			for i := range values {
-				scanArgs[i] = &values[i]
-			}
-			
-			// Print each row
-			rowCount := 0
-			for rows.Next() {
-				err = rows.Scan(scanArgs...)
-				if err != nil {
-					return fmt.Errorf("error scanning row: %v", err)
-				}
-				
-				// Print each column on a new line
-				fmt.Printf("Row %d:\n", rowCount+1)
-				fmt.Println(strings.Repeat("-", 40))
-				
-				for i, col := range columns {
-					// Format the value based on type
-					var displayVal string
-					v := values[i]
-					
-					if v == nil {
-						displayVal = "<NULL>"
-					} else {
-						switch val := v.(type) {
-						case []byte:
-							// Try to convert byte slice to UUID string if it looks like a UUID
-							if len(val) == 16 {
-								// Format as UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-								displayVal = fmt.Sprintf("%x-%x-%x-%x-%x", 
-									val[0:4], val[4:6], val[6:8], val[8:10], val[10:16])
-							} else {
-								// Try to convert to string
-								displayVal = string(val)
-							}
-						case time.Time:
-							// Format time values consistently
-							displayVal = val.Format("2006-01-02 15:04:05")
-						default:
-							// Use default formatting for other types
-							displayVal = fmt.Sprintf("%v", val)
-						}
-					}
-					
-					fmt.Printf("  %s: %s\n", col, displayVal)
-				}
-				fmt.Println()
-				rowCount++
-			}
-			
-			if err = rows.Err(); err != nil {
-				return fmt.Errorf("error iterating rows: %v", err)
-			}
-			
+
 			fmt.Printf("Total rows: %d\n\n", rowCount)
-		} else {
-			if !approve {
-				// For preview mode, convert UPDATE statements to SELECT for safety
-				previewSQL := strings.Replace(qdef.SQL, "UPDATE", "SELECT * FROM", 1)
-				rows, err := tx.QueryContext(ctx, previewSQL, args...)
-				if err != nil {
-					return fmt.Errorf("preview failed for %s: %v", id, err)
+		} else if !approve {
+			// For preview mode, create a simple SELECT statement
+			// Extract table name and WHERE clause from the UPDATE statement
+			sql := qdef.SQL
+			
+			// Normalize SQL by removing newlines and extra spaces
+			normalizedSQL := strings.Join(strings.Fields(sql), " ")
+			upper := strings.ToUpper(normalizedSQL)
+			
+			// Find key parts of the SQL
+			updateIndex := strings.Index(upper, "UPDATE ")
+			setIndex := strings.Index(upper, " SET ")
+			whereIndex := strings.Index(upper, " WHERE ")
+			
+			var previewSQL string
+			
+			if updateIndex != -1 && setIndex != -1 && updateIndex < setIndex {
+				// Extract table name
+				tableName := strings.TrimSpace(normalizedSQL[updateIndex+7:setIndex])
+				
+				// Build a simple SELECT statement
+				if whereIndex != -1 && whereIndex > setIndex {
+					whereClause := normalizedSQL[whereIndex:]
+					previewSQL = fmt.Sprintf("SELECT * FROM %s %s", tableName, whereClause)
+				} else {
+					previewSQL = fmt.Sprintf("SELECT * FROM %s", tableName)
 				}
-				defer rows.Close()
-				fmt.Printf("[PREVIEW] %s\n", previewSQL)
-				continue
+			} else {
+				// Fallback to original SQL with a comment
+				previewSQL = "-- Could not parse UPDATE statement properly\n" + sql
+				return fmt.Errorf("could not parse UPDATE statement for preview: %s", id)
 			}
+			
+			fmt.Printf("[PREVIEW] Using query: %s\n", previewSQL)
+			rows, err := tx.QueryContext(ctx, previewSQL, args...)
+			if err != nil {
+				return fmt.Errorf("preview failed for %s: %v", id, err)
+			}
+			defer rows.Close()
+			
+			// Print the query results
+			prefix := "[PREVIEW]"
+			title := "Results that would be affected by the UPDATE:"
+			rowCount, err := printQueryResults(rows, qdef.ID, prefix, title)
+			if err != nil {
+				return fmt.Errorf("error printing preview results for %s: %v", id, err)
+			}
+			
+			fmt.Printf("Total rows that would be affected: %d\n\n", rowCount)
+			continue
+		} else {
 			// For non-SELECT statements, use ExecContext
 			res, err := tx.ExecContext(ctx, qdef.SQL, args...)
 			if err != nil {
@@ -229,4 +208,75 @@ func main() {
 	if err := runQueriesInTransaction(db, ids, params, *approve); err != nil {
 		log.Fatalf("Error executing queries: %v", err)
 	}
+}
+
+// printQueryResults formats and prints the results of a SQL query
+func printQueryResults(rows *sql.Rows, queryID, prefix, title string) (int, error) {
+	// Get column names
+	columns, err := rows.Columns()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get columns: %v", err)
+	}
+	
+	fmt.Printf("%s QueryID=%s\n", prefix, queryID)
+	fmt.Println(title)
+	
+	// Prepare values to scan into
+	values := make([]interface{}, len(columns))
+	scanArgs := make([]interface{}, len(columns))
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+	
+	// Print each row
+	rowCount := 0
+	for rows.Next() {
+		err = rows.Scan(scanArgs...)
+		if err != nil {
+			return rowCount, fmt.Errorf("error scanning row: %v", err)
+		}
+		
+		// Print each column on a new line
+		fmt.Printf("Row %d:\n", rowCount+1)
+		fmt.Println(strings.Repeat("-", 40))
+		
+		for i, col := range columns {
+			// Format the value based on type
+			var displayVal string
+			v := values[i]
+			
+			if v == nil {
+				displayVal = "<NULL>"
+			} else {
+				switch val := v.(type) {
+				case []byte:
+					// Try to convert byte slice to UUID string if it looks like a UUID
+					if len(val) == 16 {
+						// Format as UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+						displayVal = fmt.Sprintf("%x-%x-%x-%x-%x", 
+							val[0:4], val[4:6], val[6:8], val[8:10], val[10:16])
+					} else {
+						// Try to convert to string
+						displayVal = string(val)
+					}
+				case time.Time:
+					// Format time values consistently
+					displayVal = val.Format("2006-01-02 15:04:05")
+				default:
+					// Use default formatting for other types
+					displayVal = fmt.Sprintf("%v", val)
+				}
+			}
+			
+			fmt.Printf("  %s: %s\n", col, displayVal)
+		}
+		fmt.Println()
+		rowCount++
+	}
+	
+	if err = rows.Err(); err != nil {
+		return rowCount, fmt.Errorf("error iterating rows: %v", err)
+	}
+	
+	return rowCount, nil
 }
