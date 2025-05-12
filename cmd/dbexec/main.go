@@ -85,16 +85,69 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 			continue
 		}
 
-		res, err := tx.ExecContext(ctx, qdef.SQL, args...)
-		if err != nil {
-			return fmt.Errorf("execution error for %s: %v", id, err)
-		}
-		n, _ := res.RowsAffected()
-		if qdef.MaxRowsAffected > 0 && int(n) > qdef.MaxRowsAffected {
-			return fmt.Errorf("exceeded row limit for %s: %d > %d", id, n, qdef.MaxRowsAffected)
-		}
+		// Check if this is a SELECT query
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(qdef.SQL)), "SELECT") {
+			// For SELECT statements, use QueryContext and print results
+			rows, err := tx.QueryContext(ctx, qdef.SQL, args...)
+			if err != nil {
+				return fmt.Errorf("execution error for %s: %v", id, err)
+			}
+			defer rows.Close()
+			
+			// Get column names
+			columns, err := rows.Columns()
+			if err != nil {
+				return fmt.Errorf("failed to get columns for %s: %v", id, err)
+			}
+			
+			fmt.Printf("[EXECUTED] QueryID=%s\n", qdef.ID)
+			fmt.Println("Results:")
+			fmt.Println(strings.Join(columns, "\t"))
+			fmt.Println(strings.Repeat("-", 80))
+			
+			// Prepare values to scan into
+			values := make([]interface{}, len(columns))
+			scanArgs := make([]interface{}, len(columns))
+			for i := range values {
+				scanArgs[i] = &values[i]
+			}
+			
+			// Print each row
+			rowCount := 0
+			for rows.Next() {
+				err = rows.Scan(scanArgs...)
+				if err != nil {
+					return fmt.Errorf("error scanning row: %v", err)
+				}
+				
+				// Convert to strings and print
+				var rowValues []string
+				for _, v := range values {
+					rowValues = append(rowValues, fmt.Sprintf("%v", v))
+				}
+				fmt.Println(strings.Join(rowValues, "\t"))
+				fmt.Println("\n")
+				rowCount++
+			}
+			
+			if err = rows.Err(); err != nil {
+				return fmt.Errorf("error iterating rows: %v", err)
+			}
+			
+			fmt.Printf("Total rows: %d\n\n", rowCount)
+		} else {
+			// For non-SELECT statements, use ExecContext
+			res, err := tx.ExecContext(ctx, qdef.SQL, args...)
+			if err != nil {
+				return fmt.Errorf("execution error for %s: %v", id, err)
+			}
+			n, _ := res.RowsAffected()
+			if qdef.MaxRowsAffected > 0 && int(n) > qdef.MaxRowsAffected {
+				return fmt.Errorf("exceeded row limit for %s: %d > %d", id, n, qdef.MaxRowsAffected)
+			}
 
-		fmt.Printf("[EXECUTED] QueryID=%s RowsAffected=%d\n", qdef.ID, n)
+			fmt.Printf("[EXECUTED] QueryID=%s RowsAffected=%d\n", qdef.ID, n)
+		}
 	}
 
 	if approve {
