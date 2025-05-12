@@ -74,17 +74,6 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 			args = append(args, val)
 		}
 
-		if !approve {
-			// For preview mode, convert UPDATE statements to SELECT for safety
-			previewSQL := strings.Replace(qdef.SQL, "UPDATE", "SELECT * FROM", 1)
-			rows, err := tx.QueryContext(ctx, previewSQL, args...)
-			if err != nil {
-				return fmt.Errorf("preview failed for %s: %v", id, err)
-			}
-			defer rows.Close()
-			fmt.Printf("[PREVIEW] %s\n", previewSQL)
-			continue
-		}
 
 		// Check if this is a SELECT query
 		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(qdef.SQL)), "SELECT") {
@@ -165,6 +154,17 @@ func runQueriesInTransaction(db *sql.DB, ids []string, params map[string]string,
 			
 			fmt.Printf("Total rows: %d\n\n", rowCount)
 		} else {
+			if !approve {
+				// For preview mode, convert UPDATE statements to SELECT for safety
+				previewSQL := strings.Replace(qdef.SQL, "UPDATE", "SELECT * FROM", 1)
+				rows, err := tx.QueryContext(ctx, previewSQL, args...)
+				if err != nil {
+					return fmt.Errorf("preview failed for %s: %v", id, err)
+				}
+				defer rows.Close()
+				fmt.Printf("[PREVIEW] %s\n", previewSQL)
+				continue
+			}
 			// For non-SELECT statements, use ExecContext
 			res, err := tx.ExecContext(ctx, qdef.SQL, args...)
 			if err != nil {
